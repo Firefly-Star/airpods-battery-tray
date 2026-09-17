@@ -70,6 +70,10 @@ Windows 保留的 PSM 是 SDP `0x01`、RFCOMM `0x03`、BNEP `0x0F`、HID Control
 
 Bluetooth profile driver 通过 BRB（Bluetooth Request Block）与栈交互：`BRB_REGISTER_PSM` 注册 PSM，`BRB_L2CA_REGISTER_SERVER` / `BRB_L2CA_OPEN_CHANNEL_RESPONSE` 处理连接。可参考开源项目 BthPS3（PS3 手柄走 L2CAP，同名场景）。
 
+### 关于 32feet.NET
+
+`32feet.NET` / `InTheHand.Net.Bluetooth` 虽然提供了 `BluetoothProtocolType.L2Cap`，但其 API 面围绕 RFCOMM 设计，不提供 AAP 所需的字节级收发与组帧能力，引入后仍要自己写同样的代码，收益为零。所以当时是直接 P/Invoke。
+
 ### P/Invoke 要点（用户态，虽然最终没能连上）
 
 - `SOCKADDR_BTH` 声明在 `#include <pshpack1.h>` 区块内，**必须 `[StructLayout(LayoutKind.Sequential, Pack=1)]`**，`sizeof == 30`。打包写错会变成 40，`connect()` 报 `10049`
