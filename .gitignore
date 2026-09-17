@@ -2,3 +2,6 @@ bin/
 obj/
 *.user
 captures/
+
+# Local-only Claude Code settings; shared settings.json is still tracked.
+.claude/settings.local.json
