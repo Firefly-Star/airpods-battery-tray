@@ -70,6 +70,7 @@ dotnet publish src/AirPodsBleTray -c Release -r win-x64 --self-contained true \
 | `src/AirPodsBleTray/` | Windows 端产品本体，托盘程序 |
 | `src/AirPodsBleScan/` | Windows 端诊断工具。当托盘显示「暂无广播」时，用它区分是扫描器挂了还是耳机确实没在广播 |
 | `android/` | 安卓端，常驻通知 + 桌面小组件 |
+| `docs/findings.md` | **技术事实记录**——两个平台蓝牙栈里那些"静默失败"的行为，以及苹果广播协议的细节 |
 | `docs/l2cap-dead-end.md` | 为什么拿不到精确电量——苹果私有 AAP 协议在 Windows 用户态、以及安卓未 root 时都走不通 |
 | `docs/android-notes.md` | 安卓端的排查过程，重点是**什么没用**（全收扫描、放宽信号门槛、改 PHY 都无效） |
 | `useing-lib.md` | 依赖与所用原生 API 的清单 |
