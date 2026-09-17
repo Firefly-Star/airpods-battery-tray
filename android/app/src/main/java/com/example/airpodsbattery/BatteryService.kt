@@ -56,8 +56,17 @@ class BatteryService : Service() {
         return START_STICKY
     }
 
+    private var lastRenderedKey: String? = null
+
     private fun onState(state: AirPodsState) {
         BatteryStore.save(this, state)
+
+        // 扫描器每秒都会回调一次，但通知和小组件不该每秒重画——那既费电又会让通知栏闪。
+        // 只在数值变化、或"多久之前"这个标签翻页时才真的更新。
+        val key = "${state.left}|${state.right}|${state.case}|${state.lastSeenAt}|${state.ageLabel()}"
+        if (key == lastRenderedKey) return
+        lastRenderedKey = key
+
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification(state))
         BatteryWidgetProvider.refresh(this)
@@ -102,7 +111,7 @@ class BatteryService : Service() {
 
         val title = state.modelName ?: "AirPods 电量"
         val text = if (state.hasAnyReading) {
-            state.summary()
+            "${state.summary()} · ${state.ageLabel()}"
         } else {
             "暂无广播 · 耳机广播时才会出现数值"
         }

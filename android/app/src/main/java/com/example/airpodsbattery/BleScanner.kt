@@ -57,6 +57,13 @@ class BleScanner(
     private var rejectedAdvertisements = 0
     private var lastRejectionLoggedAt = 0L
 
+    /**
+     * 最后一次成功读数。数据源是稀疏的（耳机大部分时间不广播），如果把过期读数清成空，
+     * 界面就会大部分时间显示"暂无广播"、偶尔闪一下数字，看起来像坏的。电量本来也不该
+     * 因为暂时没广播就被抹掉——保留它，由界面标明"多久之前"。
+     */
+    private var lastState: AirPodsState? = null
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             onAnyResult()
@@ -223,21 +230,23 @@ class BleScanner(
         val right = pick { it.rightBattery != null }
         val box = pick { it.caseBattery != null }
 
-        onState(
-            AirPodsState(
-                modelName = model?.modelName,
-                left = left?.leftBattery,
-                right = right?.rightBattery,
-                case = box?.caseBattery,
-                leftCharging = left?.leftCharging ?: false,
-                rightCharging = right?.rightCharging ?: false,
-                caseCharging = box?.caseCharging ?: false,
-                lastSeenAt = lastSeenAt,
-                lastRawHex = model?.raw?.joinToString("") { "%02X".format(it) },
-                lastAddress = model?.mac(),
-                lastRssi = model?.rssi,
-            ),
+        val fresh = AirPodsState(
+            modelName = model?.modelName,
+            left = left?.leftBattery,
+            right = right?.rightBattery,
+            case = box?.caseBattery,
+            leftCharging = left?.leftCharging ?: false,
+            rightCharging = right?.rightCharging ?: false,
+            caseCharging = box?.caseCharging ?: false,
+            lastSeenAt = lastSeenAt,
+            lastRawHex = model?.raw?.joinToString("") { "%02X".format(it) },
+            lastAddress = model?.mac(),
+            lastRssi = model?.rssi,
         )
+
+        val state = if (fresh.hasAnyReading) fresh else lastState ?: fresh
+        lastState = state
+        onState(state)
     }
 
     private fun checkWatchdog() {

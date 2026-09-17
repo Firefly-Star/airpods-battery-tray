@@ -32,9 +32,9 @@ class BatteryWidgetProvider : AppWidgetProvider() {
 
             val title = buildString {
                 append(state.modelName ?: "AirPods")
-                state.lastSeenAt?.let {
+                if (state.lastSeenAt != null) {
                     append("  ")
-                    append(SimpleDateFormat("HH:mm", Locale.US).format(Date(it)))
+                    append(state.ageLabel())
                 }
             }
 

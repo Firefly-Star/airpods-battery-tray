@@ -116,6 +116,21 @@ data class AirPodsState(
 ) {
     val hasAnyReading: Boolean get() = left != null || right != null || case != null
 
+    /**
+     * 读数有多旧。数据源是稀疏的，所以"最后一次是什么时候"和数值本身一样重要——
+     * 一个 20 分钟前的 90% 和一个刚刚的 90%，含义完全不同。
+     */
+    fun ageLabel(now: Long = System.currentTimeMillis()): String {
+        val seen = lastSeenAt ?: return "从未收到"
+        val seconds = (now - seen) / 1000
+        return when {
+            seconds < 60 -> "刚刚"
+            seconds < 3600 -> "${seconds / 60} 分钟前"
+            seconds < 86400 -> "${seconds / 3600} 小时前"
+            else -> "很久以前"
+        }
+    }
+
     fun summary(): String = when {
         !hasAnyReading -> "暂无广播"
         else -> buildString {
