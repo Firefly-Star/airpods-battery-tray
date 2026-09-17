@@ -44,24 +44,28 @@ internal sealed class TrayApp : ApplicationContext
 
     private static string BuildTooltip(AirPodsSnapshot snapshot)
     {
-        if (snapshot.Advertisement is { } advertisement)
+        if (snapshot.Left is null && snapshot.Right is null && snapshot.Case is null)
         {
-            return $"左 {Show(advertisement.Left)}   右 {Show(advertisement.Right)}   盒 {Show(advertisement.Case)}\n" +
-                   $"信号 {advertisement.Rssi}dBm   {DateTimeOffset.Now:HH:mm:ss}";
+            return snapshot.LastSeenAt is { } lastSeen
+                ? $"AirPods：暂无广播\n上次读数 {lastSeen:HH:mm:ss}"
+                : "AirPods：暂无广播\n请确认耳机已连接本机";
         }
 
-        return snapshot.LastSeenAt is { } lastSeen
-            ? $"AirPods：暂无广播\n上次读数 {lastSeen:HH:mm:ss}，开盖可刷新"
-            : "AirPods：暂无广播\n合盖或收在盒里时不广播，开盖即可读取";
+        return $"{snapshot.ModelName}\n" +
+               $"左 {Show(snapshot.Left)}{Mark(snapshot.LeftCharging)}   " +
+               $"右 {Show(snapshot.Right)}{Mark(snapshot.RightCharging)}   " +
+               $"盒 {Show(snapshot.Case)}{Mark(snapshot.CaseCharging)}";
     }
 
     private static string Show(int? value) => value is null ? "--" : $"{value}%";
 
+    private static string Mark(bool charging) => charging ? "⚡" : string.Empty;
+
     private void ShowRaw()
     {
-        string text = _latest.Advertisement is { } advertisement
+        string text = _latest.Freshest is { } advertisement
             ? advertisement.Describe()
-            : "还没有收到 AirPods 广播。\n\n打开充电盒盖子，让耳机处于可广播状态。";
+            : "还没有收到 AirPods 广播。\n\n请确认耳机已连接到本机，且电量广播未被其他程序占用。";
 
         MessageBox.Show(text, "AirPods 原始数据", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }

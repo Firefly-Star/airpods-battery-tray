@@ -3,81 +3,122 @@ using System.Text;
 namespace AirPodsBleTray;
 
 /// <summary>
-/// A parsed Apple 0x07 ("AirPods proximity pairing") advertisement.
+/// An Apple 0x07 "proximity pairing" advertisement, i.e. an AirPods battery broadcast.
 ///
-/// The byte offsets below are PROVISIONAL. They come from reverse-engineering write-ups
-/// that contradict each other and have not been confirmed against a known battery reading,
-/// so the left/right nibble order in particular may be flipped. Raw is kept so the mapping
-/// can be corrected without having to capture the traffic again.
+/// The field layout is a 27-byte packed struct, verified against the GNU GPL AirPodsDesktop
+/// project (Source/Core/AppleCP.h), where it is declared as a bitfield struct with the same
+/// compile-time size assertion. Nothing here is guessed: each offset below maps to a named
+/// field there.
+///
+/// Note there is no left/right in the protocol. Each earbud broadcasts the same structure and
+/// says which side it is; the low nibble is always the broadcasting pod and the high nibble is
+/// the other one. Reading left/right without that flip is the classic way to get them swapped.
 /// </summary>
 internal sealed record AirPodsAdvertisement(
     ulong Address,
     int Rssi,
     byte[] Raw,
-    byte Model,
-    byte Status,
-    int? Left,
-    int? Right,
-    int? Case)
+    ushort ModelId,
+    bool BroadcastFromLeft,
+    int CurrentLevel,
+    int OtherLevel,
+    int CaseLevel,
+    bool CurrentCharging,
+    bool OtherCharging,
+    bool CaseCharging,
+    bool CurrentInEar,
+    bool OtherInEar,
+    bool BothInCase,
+    bool LidClosed)
 {
     public const ushort AppleCompanyId = 0x004C;
     public const byte ProximityPairingType = 0x07;
+    public const int PacketLength = 27;
 
-    // Offsets are counted from the Apple type byte, i.e. Raw[0] is the message type.
-    private const int MinimumLength = 11;
-    private const int ModelOffset = 3;
-    private const int StatusOffset = 4;
+    // Level nibbles run 0..10, i.e. 0%..100% in 10% steps. Anything above 10 means "unavailable",
+    // which is not the same as 0%.
+    private const int MaximumLevel = 10;
 
-    // Confirmed against a known reading: with both buds at 100% this byte reads 0xAA,
-    // i.e. an A nibble (100%) per ear. Offset 5 holds something that varies far too much
-    // to be a battery level.
-    private const int PodsBatteryOffset = 6;
+    public int? LeftBattery => AsPercent(BroadcastFromLeft ? CurrentLevel : OtherLevel);
 
-    // Still unverified: the case level byte below has never been checked against a known value.
-    private const int CaseBatteryOffset = 8;
+    public int? RightBattery => AsPercent(BroadcastFromLeft ? OtherLevel : CurrentLevel);
 
-    // Status bit 5 selects which pod is primary, which in turn decides which nibble
-    // of the pods byte belongs to which ear.
-    private const byte PrimaryPodIsLeft = 0x20;
+    public int? CaseBattery => AsPercent(CaseLevel);
+
+    public bool LeftCharging => BroadcastFromLeft ? CurrentCharging : OtherCharging;
+
+    public bool RightCharging => BroadcastFromLeft ? OtherCharging : CurrentCharging;
+
+    public bool LeftInEar => !LeftCharging && (BroadcastFromLeft ? CurrentInEar : OtherInEar);
+
+    public bool RightInEar => !RightCharging && (BroadcastFromLeft ? OtherInEar : CurrentInEar);
+
+    public string ModelName => ModelId switch
+    {
+        0x2002 => "AirPods 1",
+        0x200F => "AirPods 2",
+        0x2013 => "AirPods 3",
+        0x200E => "AirPods Pro",
+        0x2014 => "AirPods Pro 2",
+        0x2024 => "AirPods Pro 2 (USB-C)",
+        0x2019 => "AirPods 4",
+        0x201B => "AirPods 4 ANC",
+        0x2027 => "AirPods Pro 3",
+        0x200A => "AirPods Max",
+        0x2012 => "Beats Fit Pro",
+        _ => $"未知型号 0x{ModelId:X4}",
+    };
 
     public static bool TryParse(ulong address, int rssi, ReadOnlySpan<byte> data, out AirPodsAdvertisement advertisement)
     {
         advertisement = null!;
 
-        if (data.Length < MinimumLength || data[0] != ProximityPairingType)
+        if (data.Length != PacketLength || data[0] != ProximityPairingType || data[1] != PacketLength - 2)
         {
             return false;
         }
 
-        byte status = data[StatusOffset];
-        byte pods = data[PodsBatteryOffset];
-        byte caseByte = data[CaseBatteryOffset];
+        ushort modelId = (ushort)(data[3] | (data[4] << 8));
 
-        int? upper = DecodeNibble(pods >> 4);
-        int? lower = DecodeNibble(pods & 0x0F);
+        byte status = data[5];
+        bool currentInEar = (status & 0b0000_0010) != 0;
+        bool bothInCase = (status & 0b0000_0100) != 0;
+        bool otherInEar = (status & 0b0000_1000) != 0;
+        bool broadcastFromLeft = (status & 0b0010_0000) != 0;
 
-        bool leftIsPrimary = (status & PrimaryPodIsLeft) != 0;
+        byte pods = data[6];
+        int currentLevel = pods & 0x0F;
+        int otherLevel = pods >> 4;
+
+        byte caseByte = data[7];
+        int caseLevel = caseByte & 0x0F;
+        bool currentCharging = (caseByte & 0b0001_0000) != 0;
+        bool otherCharging = (caseByte & 0b0010_0000) != 0;
+        bool caseCharging = (caseByte & 0b0100_0000) != 0;
+
+        bool lidClosed = (data[8] & 0b0000_1000) != 0;
 
         advertisement = new AirPodsAdvertisement(
             address,
             rssi,
             data.ToArray(),
-            data[ModelOffset],
-            status,
-            leftIsPrimary ? upper : lower,
-            leftIsPrimary ? lower : upper,
-            DecodeNibble(caseByte >> 4));
+            modelId,
+            broadcastFromLeft,
+            currentLevel,
+            otherLevel,
+            caseLevel,
+            currentCharging,
+            otherCharging,
+            caseCharging,
+            currentInEar,
+            otherInEar,
+            bothInCase,
+            lidClosed);
 
         return true;
     }
 
-    // 4-bit levels: 0-9 -> 0-90%, A-E -> 100%, F -> unavailable.
-    private static int? DecodeNibble(int nibble) => nibble switch
-    {
-        0xF => null,
-        >= 0xA => 100,
-        _ => nibble * 10,
-    };
+    private static int? AsPercent(int level) => level is >= 0 and <= MaximumLevel ? level * 10 : null;
 
     public string Mac()
     {
@@ -90,29 +131,19 @@ internal sealed record AirPodsAdvertisement(
         var text = new StringBuilder();
 
         text.AppendLine($"地址   {Mac()}");
-        text.AppendLine($"信号   {Rssi} dBm");
-        text.AppendLine($"型号   0x{Model:X2}      状态 0x{Status:X2}");
+        text.AppendLine($"信号   {Rssi} dBm     广播自 {(BroadcastFromLeft ? "左耳" : "右耳")}");
+        text.AppendLine($"型号   {ModelName}");
         text.AppendLine();
-        text.AppendLine($"左 {Show(Left)}    右 {Show(Right)}    盒 {Show(Case)}");
+        text.AppendLine($"左 {Show(LeftBattery)}{Mark(LeftCharging)}   右 {Show(RightBattery)}{Mark(RightCharging)}   盒 {Show(CaseBattery)}{Mark(CaseCharging)}");
+        text.AppendLine($"左耳戴着 {(LeftInEar ? "是" : "否")}   右耳戴着 {(RightInEar ? "是" : "否")}   两只都在盒里 {(BothInCase ? "是" : "否")}   盒盖 {(LidClosed ? "关着" : "开着")}");
         text.AppendLine();
-        text.AppendLine("原始字节（从类型字节起）");
+        text.AppendLine("原始字节");
         text.AppendLine(Convert.ToHexString(Raw));
-        text.AppendLine();
-        text.AppendLine("逐字节按 4-bit 解码（0-9=0-90%，A-E=100%，F=无）：");
-
-        for (int i = 3; i < Math.Min(Raw.Length, 11); i++)
-        {
-            text.AppendLine($"  [{i,2}] 0x{Raw[i]:X2}    高 {Nibble(Raw[i] >> 4),4}    低 {Nibble(Raw[i] & 0x0F),4}");
-        }
 
         return text.ToString();
     }
 
     private static string Show(int? value) => value is null ? "--" : $"{value}%";
 
-    private static string Nibble(int nibble)
-    {
-        int? value = DecodeNibble(nibble);
-        return value is null ? "无" : $"{value}%";
-    }
+    private static string Mark(bool charging) => charging ? " ⚡" : string.Empty;
 }
