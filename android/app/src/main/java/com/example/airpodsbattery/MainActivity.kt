@@ -2,8 +2,13 @@ package com.example.airpodsbattery
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -183,7 +188,25 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Spacer(Modifier.height(20.dp))
-                Text("运行日志", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("运行日志", style = MaterialTheme.typography.titleMedium)
+                    OutlinedButton(onClick = {
+                        val text = logs.joinToString("\n")
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("AirPods 日志", text))
+                        Toast.makeText(context, "已复制 ${logs.size} 行", Toast.LENGTH_SHORT).show()
+                    }) { Text("复制") }
+                    OutlinedButton(onClick = {
+                        val share = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, logs.joinToString("\n"))
+                        }
+                        context.startActivity(Intent.createChooser(share, "分享日志"))
+                    }) { Text("分享") }
+                }
                 Spacer(Modifier.height(8.dp))
 
                 if (logs.isEmpty()) {

@@ -27,8 +27,8 @@ android {
         // 为了诊断页能如实报告。代价是不能上架应用市场，侧载不受影响。
         targetSdk = 26
 
-        versionCode = 7
-        versionName = "1.6"
+        versionCode = 8
+        versionName = "1.7"
     }
 
     signingConfigs {
