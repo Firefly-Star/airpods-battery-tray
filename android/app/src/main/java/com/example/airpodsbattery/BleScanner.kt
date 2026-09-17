@@ -52,7 +52,10 @@ class BleScanner(
     private var scanning = false
     private var restartCount = 0
     private var totalAdvertisements = 0
-    private var airPodsAdvertisements = 0
+    private var appleAdvertisements = 0
+    private var proximityPairingAdvertisements = 0
+    private val typeCounts = HashMap<Int, Int>()
+    private val lengthMismatches = HashMap<Int, Int>()
     private var acceptedAdvertisements = 0
     private var rejectedAdvertisements = 0
     private var lastRejectionLoggedAt = 0L
@@ -70,12 +73,24 @@ class BleScanner(
             val manufacturer = result.scanRecord
                 ?.getManufacturerSpecificData(AirPodsAdvertisement.APPLE_COMPANY_ID)
                 ?: return
-            airPodsAdvertisements++
+
+            appleAdvertisements++
+
+            // 记下类型字节的分布。这里至关重要：0x07 才是 AirPods 的电量报文，
+            // 0x10/0x12/0x0C 都是附近 iPhone、手表发的，长得一样但内容无关。
+            val type = manufacturer.getOrNull(0)?.toInt()?.and(0xFF) ?: -1
+            typeCounts[type] = (typeCounts[type] ?: 0) + 1
+
+            if (type == AirPodsAdvertisement.PROXIMITY_PAIRING_TYPE && manufacturer.size != AirPodsAdvertisement.PACKET_LENGTH) {
+                lengthMismatches[manufacturer.size] = (lengthMismatches[manufacturer.size] ?: 0) + 1
+            }
+
             val advertisement = AirPodsAdvertisement.parse(
                 result.device.address.toLongAddress(),
                 result.rssi,
                 manufacturer,
             ) ?: return
+            proximityPairingAdvertisements++
             accept(advertisement)
         }
 
@@ -133,9 +148,20 @@ class BleScanner(
         log("扫描已停止")
     }
 
-    fun counters(): String =
-        "总广播 $totalAdvertisements · 苹果0x07 $airPodsAdvertisements · " +
-            "采纳 $acceptedAdvertisements · 丢弃 $rejectedAdvertisements · 重启 $restartCount"
+    fun counters(): String {
+        val types = typeCounts.entries.sortedByDescending { it.value }
+            .joinToString(" ") { "0x%02X=%d".format(it.key, it.value) }
+            .ifEmpty { "（尚无）" }
+        val lengths = lengthMismatches.entries.sortedByDescending { it.value }
+            .joinToString(" ") { "${it.key}字节=%d".format(it.value) }
+            .ifEmpty { "无" }
+
+        return "总广播 $totalAdvertisements · 苹果厂商数据 $appleAdvertisements · " +
+            "0x07报文 $proximityPairingAdvertisements\n" +
+            "采纳 $acceptedAdvertisements · 丢弃 $rejectedAdvertisements · 重启 $restartCount\n" +
+            "苹果类型分布：$types\n" +
+            "0x07 长度异常：$lengths"
+    }
 
     private val scanSettings: ScanSettings
         get() = ScanSettings.Builder()
