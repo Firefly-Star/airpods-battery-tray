@@ -47,9 +47,9 @@ internal sealed class TrayApp : ApplicationContext
         if (level != _renderedLevel)
         {
             _renderedLevel = level;
-            Icon previous = _icon.Icon;
+            Icon? previous = _icon.Icon;
             _icon.Icon = BatteryIcon.Create(level, SystemInformation.SmallIconSize.Width);
-            previous.Dispose();
+            previous?.Dispose();
         }
     }
 
