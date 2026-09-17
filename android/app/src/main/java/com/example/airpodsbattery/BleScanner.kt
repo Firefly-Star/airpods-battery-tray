@@ -3,6 +3,7 @@ package com.example.airpodsbattery
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -33,6 +34,11 @@ class BleScanner(
         // 耳机塞在口袋或隔着一层桌子就可能掉到 -70 以下，门槛设太高会把真报文也滤掉。
         // 防串台交给下面的连续性校验，而不是靠这里一刀切。
         const val MIN_RSSI = -85
+
+        // 与 AirPodsAdvertisement 里的常量保持一致：类型字节 0x07、其后长度字节 25，总长 27。
+        private const val PROXIMITY_PACKET_LENGTH = 27
+        private const val PROXIMITY_TYPE: Byte = 0x07
+        private const val PROXIMITY_REMAINING_LENGTH: Byte = 25
         const val MAX_RSSI_JUMP = 50
         const val MAX_LEVEL_JUMP = 1
         const val LOST_AFTER_MS = 10_000L
@@ -99,13 +105,17 @@ class BleScanner(
             accept(advertisement)
         }
 
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            // 批量上报默认关闭（reportDelay=0），但某些机型会强制走这条路，不处理就会全丢。
+            results.forEach { onScanResult(ScanSettings.CALLBACK_TYPE_ALL_MATCHES, it) }
+        }
+
         override fun onScanFailed(errorCode: Int) {
             log("扫描失败，错误码 $errorCode")
         }
     }
 
     private var tickCount = 0
-    private var setPhyApplied = false
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -133,7 +143,7 @@ class BleScanner(
         }
 
         try {
-            adapter.bluetoothLeScanner?.startScan(null, scanSettings, scanCallback)
+            adapter.bluetoothLeScanner?.startScan(listOf(proximityPairingFilter), scanSettings, scanCallback)
             scanning = true
             lastAnyAdvertisementAt = System.currentTimeMillis()
             handler.post(ticker)
@@ -161,7 +171,7 @@ class BleScanner(
         val lengths = lengthMismatches.entries.sortedByDescending { it.value }
             .joinToString(" ") { "${it.key}字节=%d".format(it.value) }
             .ifEmpty { "无" }
-        val phy = if (setPhyApplied) "全 PHY" else "默认 PHY"
+        val phy = "硬件过滤 + 全量上报"
 
         return "总广播 $totalAdvertisements · 苹果厂商数据 $appleAdvertisements · " +
             "0x07报文 $proximityPairingAdvertisements\n" +
@@ -173,21 +183,40 @@ class BleScanner(
             .joinToString(" ") { "${it.key}字节=%d".format(it.value) }.ifEmpty { "（尚无）" }
     }
 
-    // 手机收得到附近 iPhone 的苹果广播，却一条都收不到 AirPods 的。两者差别在于 AirPods 那条是
-    // ScannableUndirected，而且可能在 LE Coded PHY 上发——默认只扫 1M PHY 就会漏掉。
-    // 所以显式打开全部 PHY，并明确允许非传统广播；设备不支持时退回默认设置。
-    private val scanSettings: ScanSettings
+    /**
+     * 只匹配 AirPods 的电量报文：苹果厂商 ID + 厂家数据以 `07 19`（类型 0x07、长度 25）开头。
+     *
+     * 这个过滤器可以交给蓝牙控制器**硬件执行**，走的是一条和"全收"完全不同的路径。实测中
+     * 手机用"全收"扫描能收到附近 iPhone 的苹果广播，却一条 AirPods 报文都收不到，而同一个
+     * 房间的电脑能收到——转向硬件过滤路径是唯一还没试过的方向。
+     *
+     * 掩码只有前两个字节为 1，其余为 0，所以后半段加密内容不影响匹配。
+     */
+    private val proximityPairingFilter: ScanFilter
         get() {
-            val builder = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            try {
-                builder.setLegacy(false)
-                builder.setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
-                setPhyApplied = true
-            } catch (e: Exception) {
-                Diagnostics.log("设置扫描 PHY 失败，沿用默认值：${e.message}")
+            val data = ByteArray(PROXIMITY_PACKET_LENGTH).apply {
+                this[0] = PROXIMITY_TYPE
+                this[1] = PROXIMITY_REMAINING_LENGTH
             }
-            return builder.build()
+            val mask = ByteArray(PROXIMITY_PACKET_LENGTH).apply {
+                this[0] = 1
+                this[1] = 1
+            }
+            return ScanFilter.Builder()
+                .setManufacturerData(AirPodsAdvertisement.APPLE_COMPANY_ID, data, mask)
+                .build()
         }
+
+    // MATCH_NUM_MAX_ADVERTISEMENT 是关键：默认值是"每台设备每次扫描只上报一条"，
+    // 配合 MATCH_MODE_AGGRESSIVE 才能把所有报文都拿到。
+    private val scanSettings: ScanSettings
+        get() = ScanSettings.Builder()
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+            .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+            .setReportDelay(0L)
+            .build()
 
     /**
      * 把收到的原始广播字节记下来（去重，只留前 20 条）。
