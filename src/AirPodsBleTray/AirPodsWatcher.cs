@@ -18,6 +18,10 @@ internal sealed class AirPodsWatcher : IDisposable
 {
     private static readonly TimeSpan Freshness = TimeSpan.FromSeconds(20);
 
+    // Your own AirPods sit around -30..-45 dBm on a desk; anything weaker is a neighbour's and
+    // would otherwise be reported as yours whenever yours goes quiet.
+    private const int MinimumRssi = -55;
+
     private readonly BluetoothLEAdvertisementWatcher _watcher = new()
     {
         ScanningMode = BluetoothLEScanningMode.Active,
@@ -68,6 +72,7 @@ internal sealed class AirPodsWatcher : IDisposable
             }
 
             AirPodsAdvertisement? best = _recent.Values
+                .Where(entry => entry.Ad.Rssi >= MinimumRssi)
                 .OrderByDescending(entry => entry.Ad.Rssi)
                 .Select(entry => entry.Ad)
                 .FirstOrDefault();

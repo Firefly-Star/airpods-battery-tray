@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace AirPodsBleTray;
 
 /// <summary>
@@ -25,7 +27,13 @@ internal sealed record AirPodsAdvertisement(
     private const int MinimumLength = 11;
     private const int ModelOffset = 3;
     private const int StatusOffset = 4;
-    private const int PodsBatteryOffset = 5;
+
+    // Confirmed against a known reading: with both buds at 100% this byte reads 0xAA,
+    // i.e. an A nibble (100%) per ear. Offset 5 holds something that varies far too much
+    // to be a battery level.
+    private const int PodsBatteryOffset = 6;
+
+    // Still unverified: the case level byte below has never been checked against a known value.
     private const int CaseBatteryOffset = 8;
 
     // Status bit 5 selects which pod is primary, which in turn decides which nibble
@@ -77,12 +85,34 @@ internal sealed record AirPodsAdvertisement(
         return string.Join(":", Enumerable.Range(0, 6).Select(i => hex.Substring(i * 2, 2)));
     }
 
-    public string Describe() =>
-        $"地址   {Mac()}\n" +
-        $"信号   {Rssi} dBm\n" +
-        $"型号   0x{Model:X2}      状态 0x{Status:X2}\n\n" +
-        $"左 {Show(Left)}    右 {Show(Right)}    盒 {Show(Case)}\n\n" +
-        $"原始字节（从类型字节起）\n{Convert.ToHexString(Raw)}";
+    public string Describe()
+    {
+        var text = new StringBuilder();
+
+        text.AppendLine($"地址   {Mac()}");
+        text.AppendLine($"信号   {Rssi} dBm");
+        text.AppendLine($"型号   0x{Model:X2}      状态 0x{Status:X2}");
+        text.AppendLine();
+        text.AppendLine($"左 {Show(Left)}    右 {Show(Right)}    盒 {Show(Case)}");
+        text.AppendLine();
+        text.AppendLine("原始字节（从类型字节起）");
+        text.AppendLine(Convert.ToHexString(Raw));
+        text.AppendLine();
+        text.AppendLine("逐字节按 4-bit 解码（0-9=0-90%，A-E=100%，F=无）：");
+
+        for (int i = 3; i < Math.Min(Raw.Length, 11); i++)
+        {
+            text.AppendLine($"  [{i,2}] 0x{Raw[i]:X2}    高 {Nibble(Raw[i] >> 4),4}    低 {Nibble(Raw[i] & 0x0F),4}");
+        }
+
+        return text.ToString();
+    }
 
     private static string Show(int? value) => value is null ? "--" : $"{value}%";
+
+    private static string Nibble(int nibble)
+    {
+        int? value = DecodeNibble(nibble);
+        return value is null ? "无" : $"{value}%";
+    }
 }
