@@ -30,10 +30,13 @@
 
 | API | 用途 |
 | --- | --- |
-| `android.bluetooth.le.BluetoothLeScanner` | 扫描 BLE 广播。`targetSdk` 为 26 时走旧版权限模型，需要运行时授予 `ACCESS_FINE_LOCATION` |
-| `android.bluetooth.BluetoothDevice#createInsecureL2capSocket(int)` | **隐藏 API**。联系 AirPods 私有 AAP 通道（PSM `0x1001`）的唯一途径，属于 `max-target-o` 级别，因此本项目 `targetSdk = 26` |
+| `android.bluetooth.le.BluetoothLeScanner` | 扫描 BLE 广播。**必须带 `ScanFilter`**（苹果厂商 ID + `07 19` 前缀）让控制器硬件过滤，并用 `MATCH_NUM_MAX_ADVERTISEMENT`；"全收"模式下收不到 AirPods 的报文 |
+| `android.bluetooth.BluetoothDevice#createInsecureL2capSocket(int)` | 隐藏 API，曾用来尝试 AAP 通道。targetSdk 26 时能调通，但 `connect()` 会死锁在蓝牙栈里，**这条路已放弃**，targetSdk 已回到 35 |
 | `android.app.Service` + `NotificationChannel` | 前台服务与常驻通知 |
 | `android.appwidget.AppWidgetProvider` | 桌面小组件 |
-| `java.lang.reflect` | 调用上面那个隐藏 API |
+
+**权限：** 安卓 12 起用 `BLUETOOTH_SCAN`（`neverForLocation`）与 `BLUETOOTH_CONNECT`，旧的 `BLUETOOTH`/`BLUETOOTH_ADMIN`/`ACCESS_FINE_LOCATION` 封顶 `maxSdkVersion="30"`。
+
+**参考实现：** 扫描配置对齐了 [CAPod](https://github.com/d4rken-org/capod)（GPLv3，LibrePods 官方推荐给未 root 用户的方案）。具体差异与踩坑记录见 [`docs/android-notes.md`](docs/android-notes.md)。
 
 **构建环境：** JDK 17（`C:\Program Files\BellSoft\LibericaJDK-17`）、Android SDK（`C:\Users\Summer\Android\Sdk`，含 android-35 与 build-tools 35.0.0）、Gradle wrapper 指向腾讯云镜像。
