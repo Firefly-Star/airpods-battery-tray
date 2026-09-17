@@ -56,6 +56,10 @@ class BleScanner(
     private var proximityPairingAdvertisements = 0
     private val typeCounts = HashMap<Int, Int>()
     private val lengthMismatches = HashMap<Int, Int>()
+
+    /** 去重后保留前若干条原始广播，用来确认手机到底收到了什么字节。 */
+    private val rawDumps = LinkedHashSet<String>()
+    private val rawLengthCounts = HashMap<Int, Int>()
     private var acceptedAdvertisements = 0
     private var rejectedAdvertisements = 0
     private var lastRejectionLoggedAt = 0L
@@ -70,6 +74,7 @@ class BleScanner(
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             onAnyResult()
+            recordRaw(result)
             val manufacturer = result.scanRecord
                 ?.getManufacturerSpecificData(AirPodsAdvertisement.APPLE_COMPANY_ID)
                 ?: return
@@ -160,13 +165,35 @@ class BleScanner(
             "0x07报文 $proximityPairingAdvertisements\n" +
             "采纳 $acceptedAdvertisements · 丢弃 $rejectedAdvertisements · 重启 $restartCount\n" +
             "苹果类型分布：$types\n" +
-            "0x07 长度异常：$lengths"
+            "0x07 长度异常：$lengths\n" +
+            "广播包长度分布：" + rawLengthCounts.entries.sortedByDescending { it.value }
+            .joinToString(" ") { "${it.key}字节=%d".format(it.value) }.ifEmpty { "（尚无）" }
     }
 
     private val scanSettings: ScanSettings
         get() = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
+
+    /**
+     * 把收到的原始广播字节记下来（去重，只留前 20 条）。
+     *
+     * 这是用来回答一个具体问题的：手机到底有没有收到 AirPods 那个包？如果原文里压根没有，
+     * 那是扫描配置的问题；如果有但结构不对（比如被塞进 scan response、或长度超过 31 字节
+     * 说明是扩展广播），那就是解析的问题。两种修法完全不同。
+     */
+    private fun recordRaw(result: ScanResult) {
+        val raw = result.scanRecord?.bytes ?: return
+        rawLengthCounts[raw.size] = (rawLengthCounts[raw.size] ?: 0) + 1
+        if (rawDumps.size >= 20) return
+
+        val hex = raw.toHex()
+        if (!rawDumps.add(hex.take(80))) return
+        log(
+            "原文 len=${raw.size} rssi=${result.rssi} " +
+                raw.take(40).joinToString(" ") { "%02X".format(it) },
+        )
+    }
 
     private fun onAnyResult() {
         lastAnyAdvertisementAt = System.currentTimeMillis()
