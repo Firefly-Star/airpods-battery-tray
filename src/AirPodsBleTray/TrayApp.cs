@@ -9,6 +9,7 @@ internal sealed class TrayApp : ApplicationContext
     private readonly AirPodsWatcher _watcher;
     private readonly System.Windows.Forms.Timer _refresh;
     private AirPodsSnapshot _latest;
+    private int? _renderedLevel;
 
     public TrayApp()
     {
@@ -20,7 +21,7 @@ internal sealed class TrayApp : ApplicationContext
 
         _icon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = BatteryIcon.Create(null, SystemInformation.SmallIconSize.Width),
             Text = "AirPods 电量：正在扫描…",
             Visible = true,
             ContextMenuStrip = menu,
@@ -40,6 +41,27 @@ internal sealed class TrayApp : ApplicationContext
     {
         _latest = _watcher.Snapshot();
         _icon.Text = BuildTooltip(_latest);
+
+        // Rebuilding the icon repaints the tray, so only do it when the level actually moved.
+        int? level = PickLevel(_latest);
+        if (level != _renderedLevel)
+        {
+            _renderedLevel = level;
+            Icon previous = _icon.Icon;
+            _icon.Icon = BatteryIcon.Create(level, SystemInformation.SmallIconSize.Width);
+            previous.Dispose();
+        }
+    }
+
+    // The lower earbud is what matters; the case is only a fallback.
+    private static int? PickLevel(AirPodsSnapshot snapshot)
+    {
+        if (snapshot.Left is { } left && snapshot.Right is { } right)
+        {
+            return Math.Min(left, right);
+        }
+
+        return snapshot.Left ?? snapshot.Right ?? snapshot.Case;
     }
 
     private static string BuildTooltip(AirPodsSnapshot snapshot)
@@ -65,7 +87,7 @@ internal sealed class TrayApp : ApplicationContext
     {
         string text = _latest.Freshest is { } advertisement
             ? advertisement.Describe()
-            : "还没有收到 AirPods 广播。\n\n请确认耳机已连接到本机，且电量广播未被其他程序占用。";
+            : "还没有收到 AirPods 广播。\n\n请确认耳机已连接到本机。";
 
         MessageBox.Show(text, "AirPods 原始数据", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
