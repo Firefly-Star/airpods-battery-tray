@@ -3,6 +3,7 @@ obj/
 *.user
 captures/
 publish/
+publish-single/
 
 # Local-only Claude Code settings; shared settings.json is still tracked.
 .claude/settings.local.json
