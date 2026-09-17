@@ -5,11 +5,11 @@ namespace AirPodsBleTray;
 
 internal sealed class TrayApp : ApplicationContext
 {
+    private readonly Icon _iconImage;
     private readonly NotifyIcon _icon;
     private readonly AirPodsWatcher _watcher;
     private readonly System.Windows.Forms.Timer _refresh;
     private AirPodsSnapshot _latest;
-    private int? _renderedLevel;
 
     public TrayApp()
     {
@@ -19,9 +19,13 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => Shutdown());
 
+        // Built once: the icon is static, so there is no reason to rebuild it every tick. That
+        // also keeps the GDI handle count flat, which a per-update GetHicon() would not.
+        _iconImage = CaseIcon.Create(SystemInformation.SmallIconSize.Width);
+
         _icon = new NotifyIcon
         {
-            Icon = BatteryIcon.Create(null, SystemInformation.SmallIconSize.Width),
+            Icon = _iconImage,
             Text = "AirPods 电量：正在扫描…",
             Visible = true,
             ContextMenuStrip = menu,
@@ -41,27 +45,6 @@ internal sealed class TrayApp : ApplicationContext
     {
         _latest = _watcher.Snapshot();
         _icon.Text = BuildTooltip(_latest);
-
-        // Rebuilding the icon repaints the tray, so only do it when the level actually moved.
-        int? level = PickLevel(_latest);
-        if (level != _renderedLevel)
-        {
-            _renderedLevel = level;
-            Icon? previous = _icon.Icon;
-            _icon.Icon = BatteryIcon.Create(level, SystemInformation.SmallIconSize.Width);
-            previous?.Dispose();
-        }
-    }
-
-    // The lower earbud is what matters; the case is only a fallback.
-    private static int? PickLevel(AirPodsSnapshot snapshot)
-    {
-        if (snapshot.Left is { } left && snapshot.Right is { } right)
-        {
-            return Math.Min(left, right);
-        }
-
-        return snapshot.Left ?? snapshot.Right ?? snapshot.Case;
     }
 
     private static string BuildTooltip(AirPodsSnapshot snapshot)
@@ -106,6 +89,7 @@ internal sealed class TrayApp : ApplicationContext
         _icon.Visible = false;
         _watcher.Dispose();
         _icon.Dispose();
+        _iconImage.Dispose();
         ExitThread();
     }
 }
