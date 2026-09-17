@@ -1,0 +1,247 @@
+package com.example.airpodsbattery
+
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
+import androidx.core.content.ContextCompat
+import java.util.Locale
+
+/**
+ * 扫描 AirPods 的电量广播。
+ *
+ * 两件事让它比看起来麻烦：
+ *
+ *  * 附近每一副 AirPods 都发同样形状的报文，而且耳机每几分钟会轮换一次 LE 地址，所以没法靠
+ *    地址把设备钉住。区分办法和 Windows 端一致：地址变化时要求型号一致、电量变化不超过一档、
+ *    信号差不超过 50 dBm。
+ *
+ *  * 安卓的扫描会莫名停摆（和 Windows 那边一样）。看门狗在长时间收不到任何广播时重启扫描。
+ */
+class BleScanner(
+    private val context: Context,
+    private val onState: (AirPodsState) -> Unit,
+    private val onLog: (String) -> Unit = {},
+) {
+    private companion object {
+        const val TAG = "BleScanner"
+        const val MIN_RSSI = -60
+        const val MAX_RSSI_JUMP = 50
+        const val MAX_LEVEL_JUMP = 1
+        const val LOST_AFTER_MS = 10_000L
+        const val WATCHDOG_AFTER_MS = 30_000L
+    }
+
+    private class TrackedSide {
+        var advertisement: AirPodsAdvertisement? = null
+        var seenAt: Long = 0
+    }
+
+    private val adapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
+    private val sides = arrayOf(TrackedSide(), TrackedSide()) // 0 = 左, 1 = 右
+    private val handler = Handler(Looper.getMainLooper())
+    private var lastAnyAdvertisementAt = 0L
+    private var lastSeenAt: Long? = null
+    private var scanning = false
+    private var restartCount = 0
+    private var totalAdvertisements = 0
+    private var airPodsAdvertisements = 0
+
+    private val scanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            onAnyResult()
+            val manufacturer = result.scanRecord
+                ?.getManufacturerSpecificData(AirPodsAdvertisement.APPLE_COMPANY_ID)
+                ?: return
+            airPodsAdvertisements++
+            val advertisement = AirPodsAdvertisement.parse(
+                result.device.address.toLongAddress(),
+                result.rssi,
+                manufacturer,
+            ) ?: return
+            accept(advertisement)
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            log("扫描失败，错误码 $errorCode")
+        }
+    }
+
+    private val ticker = object : Runnable {
+        override fun run() {
+            publish()
+            checkWatchdog()
+            handler.postDelayed(this, 1000)
+        }
+    }
+
+    val isScanning: Boolean get() = scanning
+
+    fun start() {
+        if (scanning) return
+        if (adapter == null || !adapter.isEnabled) {
+            log("蓝牙不可用或未开启")
+            return
+        }
+        if (!hasScanPermission()) {
+            log("缺少定位权限，安卓要求授予定位权限才能扫描 BLE")
+            return
+        }
+
+        try {
+            adapter.bluetoothLeScanner?.startScan(null, scanSettings, scanCallback)
+            scanning = true
+            lastAnyAdvertisementAt = System.currentTimeMillis()
+            handler.post(ticker)
+            log("扫描已启动")
+        } catch (e: SecurityException) {
+            log("启动扫描被拒：${e.message}")
+        }
+    }
+
+    fun stop() {
+        if (!scanning) return
+        scanning = false
+        handler.removeCallbacks(ticker)
+        try {
+            adapter?.bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (_: SecurityException) {
+        }
+        log("扫描已停止")
+    }
+
+    fun counters(): String =
+        "广播总数 $totalAdvertisements，其中苹果 0x07 报文 $airPodsAdvertisements，扫描重启 $restartCount 次"
+
+    private val scanSettings: ScanSettings
+        get() = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+
+    private fun onAnyResult() {
+        lastAnyAdvertisementAt = System.currentTimeMillis()
+        totalAdvertisements++
+    }
+
+    private fun accept(advertisement: AirPodsAdvertisement) {
+        if (!looksLikeOurs(advertisement)) return
+
+        val side = sides[if (advertisement.broadcastFromLeft) 0 else 1]
+        side.advertisement = advertisement
+        side.seenAt = System.currentTimeMillis()
+        lastSeenAt = side.seenAt
+
+        log(
+            "${advertisement.mac()} rssi=${advertisement.rssi} " +
+                "L=${advertisement.leftBattery ?: "--"} R=${advertisement.rightBattery ?: "--"} " +
+                "C=${advertisement.caseBattery ?: "--"} " +
+                "from=${if (advertisement.broadcastFromLeft) "L" else "R"}",
+        )
+    }
+
+    /**
+     * 决定一条广播是不是我们这副耳机发的。
+     *
+     * 地址轮换时不能只看型号——同型号的邻居会直接混进来。还要看电量有没有在一瞬间跳一大截
+     * （电量只会一档一档地变），以及信号有没有突变。
+     */
+    private fun looksLikeOurs(advertisement: AirPodsAdvertisement): Boolean {
+        if (advertisement.rssi < MIN_RSSI) return false
+
+        val side = sides[if (advertisement.broadcastFromLeft) 0 else 1]
+        val other = sides[if (advertisement.broadcastFromLeft) 1 else 0]
+
+        val previous = side.advertisement
+        if (previous != null) {
+            if (previous.address != advertisement.address) {
+                if (previous.modelId != advertisement.modelId) {
+                    log("地址变化但型号不同，判定为他人的耳机")
+                    return false
+                }
+                val jump = maxOf(
+                    levelJump(previous.leftBattery, advertisement.leftBattery),
+                    levelJump(previous.rightBattery, advertisement.rightBattery),
+                    levelJump(previous.caseBattery, advertisement.caseBattery),
+                )
+                if (jump > MAX_LEVEL_JUMP) {
+                    log("地址变化且电量跳变 $jump 档，判定为他人的耳机")
+                    return false
+                }
+            }
+            if (Math.abs(previous.rssi - advertisement.rssi) > MAX_RSSI_JUMP) {
+                log("地址变化且信号突变，判定为他人的耳机")
+                return false
+            }
+        }
+
+        if (other.advertisement?.let { Math.abs(it.rssi - advertisement.rssi) > MAX_RSSI_JUMP } == true) {
+            return false
+        }
+
+        return true
+    }
+
+    private fun publish() {
+        val cutoff = System.currentTimeMillis() - LOST_AFTER_MS
+        sides.forEach { if (it.seenAt < cutoff) it.advertisement = null }
+
+        val model = pick { it.modelId != 0 }
+        val left = pick { it.leftBattery != null }
+        val right = pick { it.rightBattery != null }
+        val box = pick { it.caseBattery != null }
+
+        onState(
+            AirPodsState(
+                modelName = model?.modelName,
+                left = left?.leftBattery,
+                right = right?.rightBattery,
+                case = box?.caseBattery,
+                leftCharging = left?.leftCharging ?: false,
+                rightCharging = right?.rightCharging ?: false,
+                caseCharging = box?.caseCharging ?: false,
+                lastSeenAt = lastSeenAt,
+                lastRawHex = model?.raw?.joinToString("") { "%02X".format(it) },
+                lastAddress = model?.mac(),
+                lastRssi = model?.rssi,
+            ),
+        )
+    }
+
+    private fun checkWatchdog() {
+        if (!scanning) return
+        if (System.currentTimeMillis() - lastAnyAdvertisementAt < WATCHDOG_AFTER_MS) return
+
+        log("$WATCHDOG_AFTER_MS ms 内没收到任何广播，重启扫描")
+        restartCount++
+        try {
+            adapter?.bluetoothLeScanner?.stopScan(scanCallback)
+            adapter?.bluetoothLeScanner?.startScan(null, scanSettings, scanCallback)
+            lastAnyAdvertisementAt = System.currentTimeMillis()
+        } catch (e: SecurityException) {
+            log("重启扫描被拒：${e.message}")
+        }
+    }
+
+    /** 两个侧面里挑持有该字段、且时间更近的那个。 */
+    private fun pick(hasField: (AirPodsAdvertisement) -> Boolean): AirPodsAdvertisement? =
+        sides.filter { it.advertisement?.let(hasField) == true }
+            .maxByOrNull { it.seenAt }
+            ?.advertisement
+
+    private fun levelJump(a: Int?, b: Int?): Int =
+        if (a == null || b == null) 0 else Math.abs(a - b) / 10
+
+    private fun hasScanPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun log(message: String) {
+        Diagnostics.log(message)
+        onLog(message)
+    }
+}

@@ -15,3 +15,25 @@
 | `Windows.Devices.Enumeration.DeviceInformation.FindAllAsync` + `BluetoothLEDevice.GetDeviceSelector()` | 启动时的自检：确认 WinRT 蓝牙接口可用 |
 
 **运行时自带：** `Windows.Storage.Streams.DataReader` 把 `IBuffer` 读成 `byte[]`。
+
+## android/
+
+**第三方库：无额外引入。** 只用 AndroidX 与 Kotlin 官方组件，版本沿用工作区里 `huami-step-app` 那套已验证的组合：
+
+| 依赖 | 用途 |
+| --- | --- |
+| `androidx.core:core-ktx` / `activity-compose` | Activity 与 Compose 基础 |
+| `androidx.compose:compose-bom` + `material3` | 界面 |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-android` | 把 AAP 探测放到后台线程 |
+
+**安卓平台 API（无需依赖）：**
+
+| API | 用途 |
+| --- | --- |
+| `android.bluetooth.le.BluetoothLeScanner` | 扫描 BLE 广播。`targetSdk` 为 26 时走旧版权限模型，需要运行时授予 `ACCESS_FINE_LOCATION` |
+| `android.bluetooth.BluetoothDevice#createInsecureL2capSocket(int)` | **隐藏 API**。联系 AirPods 私有 AAP 通道（PSM `0x1001`）的唯一途径，属于 `max-target-o` 级别，因此本项目 `targetSdk = 26` |
+| `android.app.Service` + `NotificationChannel` | 前台服务与常驻通知 |
+| `android.appwidget.AppWidgetProvider` | 桌面小组件 |
+| `java.lang.reflect` | 调用上面那个隐藏 API |
+
+**构建环境：** JDK 17（`C:\Program Files\BellSoft\LibericaJDK-17`）、Android SDK（`C:\Users\Summer\Android\Sdk`，含 android-35 与 build-tools 35.0.0）、Gradle wrapper 指向腾讯云镜像。

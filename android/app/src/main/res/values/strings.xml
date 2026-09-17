@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AirPods 电量</string>
+    <string name="widget_description">显示 AirPods 电量</string>
+</resources>

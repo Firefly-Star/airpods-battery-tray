@@ -7,3 +7,12 @@ publish-single/
 
 # Local-only Claude Code settings; shared settings.json is still tracked.
 .claude/settings.local.json
+
+# Android
+android/local.properties
+android/keystore.properties
+android/*.keystore
+android/.gradle/
+android/build/
+android/app/build/
+android/.kotlin/

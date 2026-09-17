@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 一个充电盒的简笔剪影：盒体 + 盖缝 + 指示灯。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#E8E8E8"
+        android:pathData="M40,34 H68 A10,10 0 0 1 78,44 V64 A10,10 0 0 1 68,74 H40 A10,10 0 0 1 30,64 V44 A10,10 0 0 1 40,34 Z" />
+
+    <path
+        android:strokeColor="#1F2933"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:pathData="M35,48 H73" />
+
+    <path
+        android:fillColor="#1F2933"
+        android:pathData="M54,58 A3,3 0 0 1 54,64 A3,3 0 0 1 54,58 Z" />
+</vector>
