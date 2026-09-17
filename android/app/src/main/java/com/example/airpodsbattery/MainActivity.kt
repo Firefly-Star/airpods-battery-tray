@@ -7,6 +7,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -54,17 +55,31 @@ import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
-    private val requestLocation =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    /** 安卓 12 起要 BLUETOOTH_SCAN/CONNECT，之前要定位权限；13 起通知也要运行时申请。 */
+    private val requiredPermissions: Array<String>
+        get() = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                add(Manifest.permission.BLUETOOTH_SCAN)
+                add(Manifest.permission.BLUETOOTH_CONNECT)
+            } else {
+                add(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }.toTypedArray()
+
+    private val requestPermissions =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { MaterialTheme { Screen() } }
     }
 
-    private fun hasLocationPermission(): Boolean =
-        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
+    private fun hasAllPermissions(): Boolean = requiredPermissions.all {
+        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    }
 
     @Composable
     private fun Screen() {
@@ -73,7 +88,7 @@ class MainActivity : ComponentActivity() {
 
         var state by remember { mutableStateOf(BatteryStore.load(context)) }
         var logs by remember { mutableStateOf(Diagnostics.snapshot()) }
-        var permission by remember { mutableStateOf(hasLocationPermission()) }
+        var permission by remember { mutableStateOf(hasAllPermissions()) }
         var running by remember { mutableStateOf(BatteryService.isRunning) }
         var probing by remember { mutableStateOf(false) }
         var probeResult by remember { mutableStateOf<String?>(null) }
@@ -83,7 +98,7 @@ class MainActivity : ComponentActivity() {
             while (true) {
                 state = BatteryStore.load(context)
                 logs = Diagnostics.snapshot()
-                permission = hasLocationPermission()
+                permission = hasAllPermissions()
                 running = BatteryService.isRunning
                 scannerStatus = ScannerStatus.text
                 delay(1000)
@@ -128,8 +143,8 @@ class MainActivity : ComponentActivity() {
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (!permission) {
-                        Button(onClick = { requestLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION) }) {
-                            Text("授予定位权限")
+                        Button(onClick = { requestPermissions.launch(requiredPermissions) }) {
+                            Text("授予扫描权限")
                         }
                     }
                     if (running) {

@@ -8,6 +8,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
@@ -117,6 +118,18 @@ class BleScanner(
 
     private var tickCount = 0
 
+    // 开了批量上报就必须主动催：否则结果会一直压在控制器的缓冲区里等着满。
+    private val flusher = object : Runnable {
+        override fun run() {
+            if (!scanning) return
+            try {
+                adapter?.bluetoothLeScanner?.flushPendingScanResults(scanCallback)
+            } catch (_: SecurityException) {
+            }
+            handler.postDelayed(this, 2000)
+        }
+    }
+
     private val ticker = object : Runnable {
         override fun run() {
             publish()
@@ -147,7 +160,8 @@ class BleScanner(
             scanning = true
             lastAnyAdvertisementAt = System.currentTimeMillis()
             handler.post(ticker)
-            log("扫描已启动")
+            handler.postDelayed(flusher, 2000)
+            log("扫描已启动（硬件过滤 · BALANCED · 批量上报 1 秒）")
         } catch (e: SecurityException) {
             log("启动扫描被拒：${e.message}")
         }
@@ -157,6 +171,7 @@ class BleScanner(
         if (!scanning) return
         scanning = false
         handler.removeCallbacks(ticker)
+        handler.removeCallbacks(flusher)
         try {
             adapter?.bluetoothLeScanner?.stopScan(scanCallback)
         } catch (_: SecurityException) {
@@ -207,15 +222,17 @@ class BleScanner(
                 .build()
         }
 
-    // MATCH_NUM_MAX_ADVERTISEMENT 是关键：默认值是"每台设备每次扫描只上报一条"，
-    // 配合 MATCH_MODE_AGGRESSIVE 才能把所有报文都拿到。
+    // 这几项全部对齐 CAPod：BALANCED 模式 + STICKY 匹配 + 全量上报 + 批量上报 1 秒。
+    // MATCH_NUM_MAX_ADVERTISEMENT 尤其关键——默认值是"每台设备每次扫描只上报一条"。
+    // reportDelay > 0 会启用控制器的批量缓存，所以必须像 CAPod 那样定期 flush，
+    // 否则结果要等缓冲区满才吐出来。
     private val scanSettings: ScanSettings
         get() = ScanSettings.Builder()
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+            .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
+            .setMatchMode(ScanSettings.MATCH_MODE_STICKY)
             .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
-            .setReportDelay(0L)
+            .setReportDelay(1000L)
             .build()
 
     /**
@@ -371,9 +388,15 @@ class BleScanner(
     private fun levelJump(a: Int?, b: Int?): Int =
         if (a == null || b == null) 0 else Math.abs(a - b) / 10
 
-    private fun hasScanPermission(): Boolean =
-        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
+    /** 安卓 12 起扫描要 BLUETOOTH_SCAN，之前要定位权限。 */
+    private fun hasScanPermission(): Boolean {
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Manifest.permission.BLUETOOTH_SCAN
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
+        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    }
 
     private fun log(message: String) {
         Diagnostics.log(message)

@@ -6,15 +6,26 @@
         android:required="true" />
 
     <!--
-      targetSdk 是 26，走的是旧版权限模型：扫描 BLE 靠 BLUETOOTH/BLUETOOTH_ADMIN
-      加运行时的定位权限，而不是 Android 12 起为 targetSdk 31+ 准备的 BLUETOOTH_SCAN。
+      采用和 CAPod 相同的权限模型：安卓 12 起用 BLUETOOTH_SCAN/BLUETOOTH_CONNECT，
+      旧的几个权限封顶在 API 30。
 
-      这两个权限**不能**加 maxSdkVersion="30"——加了的话，在 Android 12 及以上
-      系统上它们不会被授予，扫描会直接抛 SecurityException。
+      之前为了调用隐藏的 L2CAP API 把 targetSdk 压到 26、走旧权限模型——但那条路已经
+      证明走不通（connect 死锁），所以现在改回新模型，与能正常工作的实现对齐。
     -->
-    <uses-permission android:name="android.permission.BLUETOOTH" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

@@ -21,14 +21,13 @@ android {
         applicationId = "com.example.airpodsbattery"
         minSdk = 26
 
-        // 故意用 26 而不是 35。隐藏接口 createInsecureL2capSocket 属于 max-target-o 级别，
-        // 只有 targetSdk <= 26 的应用才被允许通过反射调用它。实测确认这一招在本机有效，
-        // 但拿到的 socket 连接 PSM 0x1001 时会死锁，所以 AAP 路线最终仍走不通——保留它只是
-        // 为了诊断页能如实报告。代价是不能上架应用市场，侧载不受影响。
-        targetSdk = 26
+        // 曾经为了反射调用隐藏的 createInsecureL2capSocket（需要 targetSdk <= 26）压到 26，
+        // 但实测那条路会死锁在蓝牙栈里，AAP 路线已放弃，保留低 targetSdk 没有意义了。
+        // 现在改成和 CAPod 一致的新权限模型——它是能正常读到电量的实现。
+        targetSdk = 35
 
-        versionCode = 10
-        versionName = "1.9"
+        versionCode = 11
+        versionName = "2.0"
     }
 
     signingConfigs {
