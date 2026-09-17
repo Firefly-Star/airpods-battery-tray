@@ -189,10 +189,12 @@ class BleScanner(
 
         val hex = raw.toHex()
         if (!rawDumps.add(hex.take(80))) return
-        log(
-            "原文 len=${raw.size} rssi=${result.rssi} " +
-                raw.take(40).joinToString(" ") { "%02X".format(it) },
-        )
+
+        // 主动扫描时安卓会把「广播包 + 扫描响应」拼在一起返回，实测这类记录正好 62 字节。
+        // AirPods 的载荷可能在后半段，所以要整条打出来，分两行便于阅读。
+        val half = raw.size / 2
+        log("原文 len=${raw.size} rssi=${result.rssi} [前段] ${raw.copyOfRange(0, half).toPrintableHex()}")
+        log("                    [后段] ${raw.copyOfRange(half, raw.size).toPrintableHex()}")
     }
 
     private fun onAnyResult() {
