@@ -8,6 +8,9 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Without this the process reports DPI values virtualised to 96 and the tray icon gets
+         drawn at 16px, which the shell then upscales and blurs on a scaled display. -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
 
 </Project>
