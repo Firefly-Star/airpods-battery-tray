@@ -105,6 +105,7 @@ class BleScanner(
     }
 
     private var tickCount = 0
+    private var setPhyApplied = false
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -160,20 +161,33 @@ class BleScanner(
         val lengths = lengthMismatches.entries.sortedByDescending { it.value }
             .joinToString(" ") { "${it.key}字节=%d".format(it.value) }
             .ifEmpty { "无" }
+        val phy = if (setPhyApplied) "全 PHY" else "默认 PHY"
 
         return "总广播 $totalAdvertisements · 苹果厂商数据 $appleAdvertisements · " +
             "0x07报文 $proximityPairingAdvertisements\n" +
             "采纳 $acceptedAdvertisements · 丢弃 $rejectedAdvertisements · 重启 $restartCount\n" +
+            "扫描 PHY：$phy\n" +
             "苹果类型分布：$types\n" +
             "0x07 长度异常：$lengths\n" +
             "广播包长度分布：" + rawLengthCounts.entries.sortedByDescending { it.value }
             .joinToString(" ") { "${it.key}字节=%d".format(it.value) }.ifEmpty { "（尚无）" }
     }
 
+    // 手机收得到附近 iPhone 的苹果广播，却一条都收不到 AirPods 的。两者差别在于 AirPods 那条是
+    // ScannableUndirected，而且可能在 LE Coded PHY 上发——默认只扫 1M PHY 就会漏掉。
+    // 所以显式打开全部 PHY，并明确允许非传统广播；设备不支持时退回默认设置。
     private val scanSettings: ScanSettings
-        get() = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
+        get() {
+            val builder = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            try {
+                builder.setLegacy(false)
+                builder.setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
+                setPhyApplied = true
+            } catch (e: Exception) {
+                Diagnostics.log("设置扫描 PHY 失败，沿用默认值：${e.message}")
+            }
+            return builder.build()
+        }
 
     /**
      * 把收到的原始广播字节记下来（去重，只留前 20 条）。
