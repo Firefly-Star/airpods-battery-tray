@@ -22,12 +22,13 @@ android {
         minSdk = 26
 
         // 故意用 26 而不是 35。隐藏接口 createInsecureL2capSocket 属于 max-target-o 级别，
-        // 只有 targetSdk <= 26 的应用才被允许通过反射调用它——那是联系 AirPods 私有 AAP
-        // 通道(拿到精确电量)的唯一途径。代价是不能上架应用市场，侧载不受影响。
+        // 只有 targetSdk <= 26 的应用才被允许通过反射调用它。实测确认这一招在本机有效，
+        // 但拿到的 socket 连接 PSM 0x1001 时会死锁，所以 AAP 路线最终仍走不通——保留它只是
+        // 为了诊断页能如实报告。代价是不能上架应用市场，侧载不受影响。
         targetSdk = 26
 
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     signingConfigs {
@@ -76,7 +77,7 @@ android {
     }
 
     lint {
-        // targetSdk 26 会触发 "ExpiredTargetSdkVersion"，那正是我们有意为之的。
+        // targetSdk 26 会触发 ExpiredTargetSdkVersion，那正是有意为之的。
         abortOnError = false
     }
 }

@@ -3,23 +3,26 @@ package com.example.airpodsbattery
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
-import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 尝试打开 AirPods 的私有 AAP 通道（L2CAP PSM 0x1001），也就是精确电量的唯一来源。
  *
- * 这件事在安卓上得走隐藏 API：公开的 `createInsecureL2capChannel` 会把 PSM 上限卡在 0x00FF，
+ * 在安卓上这必须走隐藏 API：公开的 `createInsecureL2capChannel` 把 PSM 上限卡在 0x00FF，
  * 而 `createInsecureL2capSocket` 属于 `max-target-o` 级别的非 SDK 接口——本项目的 targetSdk
  * 之所以是 26，就是为了让反射能碰到它。
  *
- * 就算反射成功，底层还有一个已知的蓝牙栈 bug（`l2c_fcr_chk_chan_modes`）会拒绝 AirPods 要求的
- * 信道模式。这一步就是用来把这两种失败区分开的，所以这里把所有中间状态都记下来。
+ * 拿到 socket 只是第一关。真正容易卡住的是 connect()：安卓的蓝牙栈有一个已知 bug
+ * （`l2c_fcr_chk_chan_modes`）会拒绝 AirPods 要求的信道模式，而且**表现为静默挂起而不是报错**。
+ * 所以这里把 connect 放到独立线程上，边等边报进度，好把"慢"和"卡死"区分开。
  */
 object AapProbe {
 
     private const val AAP_PSM = 0x1001
-    private const val TIMEOUT_SECONDS = 20L
+    private const val CONNECT_TIMEOUT_MS = 60_000L
+    private const val ATTEMPTS = 2
 
     private val HANDSHAKE = byteArrayOf(
         0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, 0x00,
@@ -28,7 +31,7 @@ object AapProbe {
 
     // 设定特性掩码（0x4D）与订阅通知（0x0F）。这两个常量的取值来自二手资料，未必正确——
     // 之所以照样发，是因为不管对不对，对端有没有回应本身就是有用的信息。
-    private val SET_FEATURES = byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x4D.toByte(), 0x00, 0xD7.toByte(), 0x00, 0x00, 0x00)
+    private val SET_FEATURES = byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x4D, 0x00, 0xD7.toByte(), 0x00, 0x00, 0x00)
     private val REQUEST_NOTIFICATIONS = byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x0F, 0x00, 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte())
 
     data class Outcome(val log: String, val connected: Boolean)
@@ -36,71 +39,85 @@ object AapProbe {
     fun run(adapter: BluetoothAdapter?): Outcome {
         val log = StringBuilder()
 
-        if (adapter == null) {
-            return Outcome("蓝牙适配器不可用", false)
-        }
+        if (adapter == null) return Outcome("蓝牙适配器不可用", false)
 
-        val candidates = try {
-            adapter.bondedDevices.orEmpty().filter {
-                val name = it.name.orEmpty().lowercase()
-                name.contains("airpods") || name.contains("beats")
-            }
+        val bonded = try {
+            adapter.bondedDevices.orEmpty().toList()
         } catch (e: SecurityException) {
             return Outcome("读取已配对设备被拒绝：${e.message}", false)
         }
 
-        log.appendLine("已配对的设备共 ${adapter.bondedDevices?.size ?: 0} 个")
+        log.appendLine("已配对设备 ${bonded.size} 个")
+        bonded.forEach {
+            log.appendLine("  ${it.name}  ${it.address}  bondState=${it.bondState}  type=${it.type}")
+        }
+
+        val candidates = bonded.filter {
+            val name = it.name.orEmpty().lowercase()
+            name.contains("airpods") || name.contains("beats")
+        }
         if (candidates.isEmpty()) {
-            log.appendLine("其中没有名字像 AirPods 的。请先在系统蓝牙设置里把耳机配对到本机。")
+            log.appendLine("没有名字像 AirPods 的已配对设备。请先在系统蓝牙设置里把耳机配对到本机。")
             return Outcome(log.toString(), false)
         }
-        candidates.forEach { log.appendLine("  候选：${it.name}  ${it.address}") }
 
         val device = candidates.first()
-        val executor = Executors.newSingleThreadExecutor()
-        return try {
-            val future = executor.submit<Outcome> { probeOne(device, log) }
-            future.get(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        } catch (e: Exception) {
-            log.appendLine("整体超时或异常：${e.javaClass.simpleName}: ${e.message}")
-            Outcome(log.toString(), false)
-        } finally {
-            executor.shutdownNow()
+        log.appendLine()
+        log.appendLine("选中：${device.name}  ${device.address}")
+
+        val cachedUuids = try {
+            device.uuids
+        } catch (_: SecurityException) {
+            null
         }
+        if (cachedUuids.isNullOrEmpty()) {
+            log.appendLine("设备的 SDP 服务缓存为空（需要主动发起 SDP 查询后才会有值）")
+        } else {
+            log.appendLine("SDP 缓存里的服务：")
+            cachedUuids.forEach { log.appendLine("  ${it.uuid}") }
+        }
+
+        for (attempt in 1..ATTEMPTS) {
+            log.appendLine()
+            log.appendLine("=== 第 $attempt 次尝试 ===")
+            val outcome = probeOnce(device, log)
+            if (outcome.connected) return outcome
+            if (attempt < ATTEMPTS) {
+                log.appendLine("歇 2 秒后重试")
+                Thread.sleep(2000)
+            }
+        }
+
+        log.appendLine()
+        log.appendLine("两次都没连上。如果日志里一直是「仍在连接中」，说明卡在信道模式协商——")
+        log.appendLine("那正是需要 root 才能绕过的那个栈 bug。")
+        return Outcome(log.toString(), false)
     }
 
-    private fun probeOne(device: BluetoothDevice, log: StringBuilder): Outcome {
+    private fun probeOnce(device: BluetoothDevice, log: StringBuilder): Outcome {
         val socket = openSocket(device, log) ?: return Outcome(log.toString(), false)
 
         try {
-            log.appendLine("连接 PSM 0x1001 …")
-            socket.connect()
-            log.appendLine("连接成功。这是一个重要信号：说明你的机器上没有那个蓝牙栈 bug。")
+            log.appendLine("连接 PSM 0x$AAP_PSM …")
+            if (!connectWithHeartbeat(socket, log)) return Outcome(log.toString(), false)
 
             send(socket, HANDSHAKE, "握手包", log)
             var received = readFor(socket, 3000)
 
             if (received.isEmpty()) {
-                log.appendLine("握手后 3 秒内没有回应，继续发特性掩码与订阅通知")
+                log.appendLine("握手后 3 秒无回应，继续发特性掩码与订阅通知")
                 send(socket, SET_FEATURES, "设定特性 0x4D", log)
                 send(socket, REQUEST_NOTIFICATIONS, "订阅通知 0x0F", log)
                 received = readFor(socket, 5000)
             }
 
             if (received.isEmpty()) {
-                log.appendLine("仍然没有收到任何字节。可能是那两个常量不对，也可能是对端不认这个连接。")
+                log.appendLine("仍未收到任何字节。")
             } else {
                 log.appendLine("收到 ${received.size} 字节：")
                 log.appendLine("  ${received.toPrintableHex()}")
-                val hasBattery = received.any { (it.toInt() and 0xFF) == 0x04 }
-                log.appendLine(if (hasBattery) "其中出现了帧头 0x04，很可能包含电量数据。" else "暂未识别出电量帧。")
             }
-
             return Outcome(log.toString(), true)
-        } catch (e: Exception) {
-            log.appendLine("连接失败：${unwrap(e)}")
-            log.appendLine("常见原因：隐藏 API 被拦截，或蓝牙栈拒绝了 AirPods 要求的信道模式。")
-            return Outcome(log.toString(), false)
         } finally {
             try {
                 socket.close()
@@ -109,8 +126,49 @@ object AapProbe {
         }
     }
 
+    /** 把阻塞的 connect() 丢到独立线程，主线程边等边报进度。 */
+    private fun connectWithHeartbeat(socket: BluetoothSocket, log: StringBuilder): Boolean {
+        val failure = AtomicReference<Throwable?>()
+        val finished = CountDownLatch(1)
+
+        val worker = Thread {
+            try {
+                socket.connect()
+            } catch (t: Throwable) {
+                failure.set(t)
+            } finally {
+                finished.countDown()
+            }
+        }
+        worker.isDaemon = true
+        worker.start()
+
+        val startedAt = System.currentTimeMillis()
+        while (true) {
+            val remaining = CONNECT_TIMEOUT_MS - (System.currentTimeMillis() - startedAt)
+            if (remaining <= 0) break
+
+            if (finished.await(minOf(5000, remaining), TimeUnit.MILLISECONDS)) {
+                val error = failure.get()
+                if (error == null) {
+                    log.appendLine("连接成功，耗时 ${System.currentTimeMillis() - startedAt} ms")
+                    return true
+                }
+                log.appendLine("连接抛异常（耗时 ${System.currentTimeMillis() - startedAt} ms）：${unwrap(error)}")
+                return false
+            }
+            log.appendLine("仍在连接中… 已等待 ${(System.currentTimeMillis() - startedAt) / 1000} 秒")
+        }
+
+        log.appendLine("等待 ${CONNECT_TIMEOUT_MS / 1000} 秒仍未连上，判定死锁")
+        try {
+            socket.close()
+        } catch (_: Exception) {
+        }
+        return false
+    }
+
     private fun openSocket(device: BluetoothDevice, log: StringBuilder): BluetoothSocket? {
-        // 先试不需要认证的那个，再试要求安全连接的版本。
         for (name in listOf("createInsecureL2capSocket", "createL2capSocket")) {
             try {
                 val method = BluetoothDevice::class.java.getMethod(name, Int::class.javaPrimitiveType)

@@ -30,7 +30,9 @@ class BleScanner(
 ) {
     private companion object {
         const val TAG = "BleScanner"
-        const val MIN_RSSI = -60
+        // 耳机塞在口袋或隔着一层桌子就可能掉到 -70 以下，门槛设太高会把真报文也滤掉。
+        // 防串台交给下面的连续性校验，而不是靠这里一刀切。
+        const val MIN_RSSI = -85
         const val MAX_RSSI_JUMP = 50
         const val MAX_LEVEL_JUMP = 1
         const val LOST_AFTER_MS = 10_000L
@@ -51,6 +53,9 @@ class BleScanner(
     private var restartCount = 0
     private var totalAdvertisements = 0
     private var airPodsAdvertisements = 0
+    private var acceptedAdvertisements = 0
+    private var rejectedAdvertisements = 0
+    private var lastRejectionLoggedAt = 0L
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -72,10 +77,16 @@ class BleScanner(
         }
     }
 
+    private var tickCount = 0
+
     private val ticker = object : Runnable {
         override fun run() {
             publish()
             checkWatchdog()
+            tickCount++
+            if (tickCount % 15 == 0) {
+                log(counters())
+            }
             handler.postDelayed(this, 1000)
         }
     }
@@ -116,7 +127,8 @@ class BleScanner(
     }
 
     fun counters(): String =
-        "广播总数 $totalAdvertisements，其中苹果 0x07 报文 $airPodsAdvertisements，扫描重启 $restartCount 次"
+        "总广播 $totalAdvertisements · 苹果0x07 $airPodsAdvertisements · " +
+            "采纳 $acceptedAdvertisements · 丢弃 $rejectedAdvertisements · 重启 $restartCount"
 
     private val scanSettings: ScanSettings
         get() = ScanSettings.Builder()
@@ -151,7 +163,9 @@ class BleScanner(
      * （电量只会一档一档地变），以及信号有没有突变。
      */
     private fun looksLikeOurs(advertisement: AirPodsAdvertisement): Boolean {
-        if (advertisement.rssi < MIN_RSSI) return false
+        if (advertisement.rssi < MIN_RSSI) {
+            return reject("信号 ${advertisement.rssi} 低于门槛 $MIN_RSSI", advertisement)
+        }
 
         val side = sides[if (advertisement.broadcastFromLeft) 0 else 1]
         val other = sides[if (advertisement.broadcastFromLeft) 1 else 0]
@@ -160,8 +174,7 @@ class BleScanner(
         if (previous != null) {
             if (previous.address != advertisement.address) {
                 if (previous.modelId != advertisement.modelId) {
-                    log("地址变化但型号不同，判定为他人的耳机")
-                    return false
+                    return reject("地址变化且型号不同（0x%04X → 0x%04X）".format(previous.modelId, advertisement.modelId), advertisement)
                 }
                 val jump = maxOf(
                     levelJump(previous.leftBattery, advertisement.leftBattery),
@@ -169,24 +182,39 @@ class BleScanner(
                     levelJump(previous.caseBattery, advertisement.caseBattery),
                 )
                 if (jump > MAX_LEVEL_JUMP) {
-                    log("地址变化且电量跳变 $jump 档，判定为他人的耳机")
-                    return false
+                    return reject("地址变化且电量跳变 $jump 档", advertisement)
                 }
             }
             if (Math.abs(previous.rssi - advertisement.rssi) > MAX_RSSI_JUMP) {
-                log("地址变化且信号突变，判定为他人的耳机")
-                return false
+                return reject("地址变化且信号突变（${previous.rssi} → ${advertisement.rssi}）", advertisement)
             }
         }
 
         if (other.advertisement?.let { Math.abs(it.rssi - advertisement.rssi) > MAX_RSSI_JUMP } == true) {
-            return false
+            return reject("与另一只耳的信号差过大", advertisement)
         }
 
+        acceptedAdvertisements++
         return true
     }
 
+    /** 记录丢弃原因，但限流——广播可能很密，不能每条都写日志。 */
+    private fun reject(reason: String, advertisement: AirPodsAdvertisement): Boolean {
+        rejectedAdvertisements++
+        val now = System.currentTimeMillis()
+        if (now - lastRejectionLoggedAt > 5000) {
+            lastRejectionLoggedAt = now
+            log(
+                "丢弃 ${advertisement.mac()} rssi=${advertisement.rssi} 型号=0x%04X：%s"
+                    .format(advertisement.modelId, reason),
+            )
+        }
+        return false
+    }
+
     private fun publish() {
+        ScannerStatus.text = counters()
+
         val cutoff = System.currentTimeMillis() - LOST_AFTER_MS
         sides.forEach { if (it.seenAt < cutoff) it.advertisement = null }
 

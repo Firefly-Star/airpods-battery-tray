@@ -72,6 +72,7 @@ class MainActivity : ComponentActivity() {
         var running by remember { mutableStateOf(BatteryService.isRunning) }
         var probing by remember { mutableStateOf(false) }
         var probeResult by remember { mutableStateOf<String?>(null) }
+        var scannerStatus by remember { mutableStateOf(ScannerStatus.text) }
 
         LaunchedEffect(Unit) {
             while (true) {
@@ -79,6 +80,7 @@ class MainActivity : ComponentActivity() {
                 logs = Diagnostics.snapshot()
                 permission = hasLocationPermission()
                 running = BatteryService.isRunning
+                scannerStatus = ScannerStatus.text
                 delay(1000)
             }
         }
@@ -140,7 +142,8 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = "定位权限：${if (permission) "已授予" else "未授予"}\n" +
-                        "前台服务：${if (running) "运行中" else "未运行"}",
+                        "前台服务：${if (running) "运行中" else "未运行"}\n" +
+                        "扫描计数：$scannerStatus",
                     fontSize = 13.sp,
                 )
 
